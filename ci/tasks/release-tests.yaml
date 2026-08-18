@@ -328,6 +328,9 @@ spec:
           [[ -f "${tools}/.ready" ]] \
             || { echo "ERROR: tools cache not ready at ${tools}"; exit 1; }
 
+          # Allow Go to auto-download the toolchain version required by go.mod.
+          export GOTOOLCHAIN=auto
+
           export GOMODCACHE="$key" CACHED_TOOLS_BIN="$tools"
           export GOPATH="$(mktemp -d)"
 
@@ -408,6 +411,13 @@ spec:
             specs/operator/tekton-pruner.spec)          tags="${tags} && tekton-pruner" ;;
           esac
 
+          # Inject suite-specific label for ecosystem sub-suites that share tests/ecosystem/
+          case "$(params.SPECS)" in
+            specs/ecosystem/ecosystem-s2i.spec)         tags="${tags} && s2i" ;;
+            specs/ecosystem/ecosystem-multiarch.spec)   tags="${tags} && multiarch" ;;
+            specs/ecosystem/ecosystem.spec)             tags="${tags} && !s2i && !multiarch" ;;
+          esac
+
           # Exclude disconnected-only tests on connected clusters
           if [[ "$(params.IS_DISCONNECTED)" != "true" ]]; then
             tags="${tags} && !disconnected"
@@ -484,7 +494,6 @@ spec:
               export CATALOG_SOURCE="$(params.CATALOG_SOURCE)" CHANNEL="$(params.CHANNEL)"
               ;;
           esac
-          find tests -name '*.test' -delete 2>/dev/null || true
           export GOTMPDIR="${report_path}/gotmp"
           mkdir -p "$GOTMPDIR"
           export ARCH="$(params.ARCH)"
@@ -496,11 +505,31 @@ spec:
           fi
 
           echo "ginkgo run --label-filter='${filter}' ${path} (ARCH=${ARCH})"
-          CI=true ARTIFACTS_DIR="${report_path}" GINKGO_PARALLEL=1 \
-            ginkgo run \
-            --procs=1 \
-            --label-filter="$filter" --timeout="$timeout" --junit-report=junit-report.xml \
-            --output-dir="${report_path}" --randomize-all -v "$path" 2>&1 | tee "$log"
+
+          # ecosystem suites (ecosystem, ecosystem-multiarch, ecosystem-s2i) all compile to
+          # tests/ecosystem/ecosystem.test on the shared PVC. Three parallel tasks writing and
+          # exec()ing the same file causes ETXTBSY. Compile to the pod-local report_path instead.
+          case "$(params.SPECS)" in
+            specs/ecosystem/*)
+              local pkg_name binary
+              pkg_name=$(basename "${path%/}")
+              binary="${report_path}/${pkg_name}.test"
+              go test -c -o "$binary" "./${path}" 2>&1 | tee "$log"
+              CI=true ARTIFACTS_DIR="${report_path}" GINKGO_PARALLEL=1 \
+                ginkgo run \
+                --procs=1 \
+                --label-filter="$filter" --timeout="$timeout" --flake-attempts=3 --junit-report=junit-report.xml \
+                --output-dir="${report_path}" --randomize-all -v "$binary" 2>&1 | tee -a "$log"
+              ;;
+            *)
+              find tests -name '*.test' -delete 2>/dev/null || true
+              CI=true ARTIFACTS_DIR="${report_path}" GINKGO_PARALLEL=1 \
+                ginkgo run \
+                --procs=1 \
+                --label-filter="$filter" --timeout="$timeout" --flake-attempts=3 --junit-report=junit-report.xml \
+                --output-dir="${report_path}" --randomize-all -v "$path" 2>&1 | tee "$log"
+              ;;
+          esac
         }
 
         save_results() {
