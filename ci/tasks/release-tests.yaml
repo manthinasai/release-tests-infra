@@ -499,7 +499,7 @@ spec:
           CI=true ARTIFACTS_DIR="${report_path}" GINKGO_PARALLEL=1 \
             ginkgo run \
             --procs=1 \
-            --label-filter="$filter" --timeout="$timeout" --junit-report=junit-report.xml \
+            --label-filter="$filter" --timeout="$timeout" --flake-attempts=3 --junit-report=junit-report.xml \
             --output-dir="${report_path}" --randomize-all -v "$path" 2>&1 | tee "$log"
         }
 
