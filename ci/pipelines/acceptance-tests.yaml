@@ -1298,6 +1298,7 @@ spec:
 
   # --- Evaluate results, optional uninstall ---
   - name: evaluate-test-suites
+    onError: continue
     params:
       - name: CLUSTER_NAME
         value: $(tasks.provision-cluster.results.cluster-name)
@@ -1384,29 +1385,6 @@ spec:
         operator: in
         values: ["true", "True"]
 
-  - name: send-slack-notification
-    params:
-      - name: IMAGE
-        value: $(params.POST_TEST_IMAGE)
-      - name: ENABLED
-        value: $(params.SEND_SLACK_NOTIFICATION)
-      - name: MESSAGE
-        value: |
-          <icon> pipeline run <pr_name> *<run_status>* <icon> <<logs_url>|logs> <failed_suites>
-    runAfter:
-      - evaluate-test-suites
-      - uninstall-pipelines-operator
-    taskRef:
-      name: send-slack-notification
-    when:
-      - input: $(params.SEND_SLACK_NOTIFICATION)
-        operator: in
-        values: ["true", "True"]
-    workspaces:
-      - name: results
-        workspace: data
-        subPath: results
-
   finally:
     - name: upload-artifacts-gcs
       onError: continue
@@ -1420,6 +1398,27 @@ spec:
           value: $(params.IMAGE)
       taskRef:
         name: upload-artifacts-gcs
+      workspaces:
+        - name: results
+          workspace: data
+          subPath: results
+
+    - name: send-slack-notification
+      onError: continue
+      params:
+        - name: IMAGE
+          value: $(params.POST_TEST_IMAGE)
+        - name: ENABLED
+          value: $(params.SEND_SLACK_NOTIFICATION)
+        - name: MESSAGE
+          value: |
+            <icon> acceptance-tests <pr_name> *<run_status>* <icon> <<logs_url>|logs> <failed_suites>
+      taskRef:
+        name: send-slack-notification
+      when:
+      - input: $(params.SEND_SLACK_NOTIFICATION)
+        operator: in
+        values: ["true", "True"]
       workspaces:
         - name: results
           workspace: data

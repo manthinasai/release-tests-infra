@@ -40,24 +40,57 @@ spec:
         status=$(oc get pipelinerun "$pipeline_run_name" -o jsonpath='{.status.conditions[0].message}')
         cluster_name=$(oc get pipelinerun "$pipeline_run_name" \
           -o jsonpath='{.spec.params[?(@.name=="CLUSTER_NAME")].value}')
-        console_url=$(oc whoami --show-console)
-        logs_url="${console_url}/k8s/ns/$(context.taskRun.namespace)/tekton.dev~v1~PipelineRun/${pipeline_run_name}/logs"
 
-        msg="$(params.MESSAGE)"
-        if [[ "$status" == *"Failed: 0"* ]]; then
-          msg="${msg//<icon>/:rainbow_2:}"
-          msg="${msg//<run_status>/succeeded}"
-        else
-          msg="${msg//<icon>/:volcano:}"
-          msg="${msg//<run_status>/failed}"
+        # Wait for upload-artifacts-gcs task to complete and get GCS URL (max 60s)
+        logs_url=""
+        for i in {1..6}; do
+          taskrun_name=$(oc get pipelinerun "$pipeline_run_name" \
+            -o jsonpath='{.status.childReferences[?(@.pipelineTaskName=="upload-artifacts-gcs")].name}' 2>/dev/null || echo "")
+
+          if [[ -n "$taskrun_name" ]]; then
+            taskrun_status=$(oc get taskrun "$taskrun_name" \
+              -o jsonpath='{.status.conditions[0].type}' 2>/dev/null || echo "")
+
+            if [[ "$taskrun_status" == "Succeeded" ]]; then
+              logs_url=$(oc get taskrun "$taskrun_name" \
+                -o jsonpath='{.status.results[?(@.name=="artifacts-url")].value}' 2>/dev/null || echo "")
+
+              if [[ -n "$logs_url" && "$logs_url" != "(none)" && "$logs_url" != "(auth-failed)" ]]; then
+                echo "Got GCS artifacts URL: $logs_url"
+                break
+              fi
+            fi
+          fi
+
+          echo "Waiting for upload-artifacts-gcs to complete... (attempt $i/6)"
+          sleep 10
+        done
+
+        # Fallback to console logs if GCS URL not available
+        if [[ -z "$logs_url" || "$logs_url" == "(none)" || "$logs_url" == "(auth-failed)" ]]; then
+          console_url=$(oc whoami --show-console)
+          logs_url="${console_url}/k8s/ns/$(context.taskRun.namespace)/tekton.dev~v1~PipelineRun/${pipeline_run_name}/logs"
+          echo "Using console logs URL (GCS not available): $logs_url"
         fi
 
+        msg="$(params.MESSAGE)"
+
+        # Determine status based on actual test results
+        has_failed_suites=false
         failed_suites_msg=""
         if [[ "$(workspaces.results.bound)" == "true" && -f "$(workspaces.results.path)/results.yaml" ]]; then
           while IFS= read -r suite; do
-            [[ -n "$suite" ]] && failed_suites_msg="${failed_suites_msg}>• ${suite}\n"
+            [[ -n "$suite" ]] && failed_suites_msg="${failed_suites_msg}>• ${suite}\n" && has_failed_suites=true
           done < <(grep fail "$(workspaces.results.path)/results.yaml" | cut -d: -f1 || true)
           [[ -n "$failed_suites_msg" ]] && failed_suites_msg="\n> Failed suites:\n${failed_suites_msg}"
+        fi
+
+        if [[ "$has_failed_suites" == true ]]; then
+          msg="${msg//<icon>/:volcano:}"
+          msg="${msg//<run_status>/failed}"
+        else
+          msg="${msg//<icon>/:rainbow_2:}"
+          msg="${msg//<run_status>/succeeded}"
         fi
 
         msg="${msg//<logs_url>/$logs_url}"
