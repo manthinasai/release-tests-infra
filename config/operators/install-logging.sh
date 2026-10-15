@@ -2,29 +2,30 @@
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-VERSION=$(oc get clusterversion version -o go-template='{{.status.desired.version}}')
-if [[ -z "$VERSION" ]]; then
-  CHANNEL=${1:-"stable-6.3"}
-elif [[ $VERSION =~ ^4\.(2[2-9]|[3-9][0-9]|[0-9]{3,}).*$ ]]; then
-  CHANNEL="stable-6.5"
-elif [[ $VERSION =~ ^4\.2[0-1].* ]]; then
-  CHANNEL="stable-6.4"
-else
-  CHANNEL="stable-6.3"
+# Select the loki/logging channel the cluster's redhat-operators catalog actually
+# advertises (OLM then installs that channel's head = latest patch). A hardcoded
+# OCP->channel map drifts out of sync with older catalogs (e.g. 4.16 ships only up
+# to stable-6.2, so a pinned stable-6.3 fails to resolve). An explicit $1 overrides.
+CHANNEL=${1:-$(oc get packagemanifests -n openshift-marketplace \
+  --field-selector metadata.name=loki-operator -l catalog=redhat-operators \
+  -o jsonpath='{.items[0].status.defaultChannel}' 2>/dev/null)}
+if [[ -z "$CHANNEL" ]]; then
+  # Fallback: derive from the OCP version if the packagemanifest is unavailable.
+  VERSION=$(oc get clusterversion version -o go-template='{{.status.desired.version}}')
+  if [[ $VERSION =~ ^4\.(2[2-9]|[3-9][0-9]|[0-9]{3,}).*$ ]]; then
+    CHANNEL="stable-6.5"
+  elif [[ $VERSION =~ ^4\.2[0-1].* ]]; then
+    CHANNEL="stable-6.4"
+  else
+    CHANNEL="stable-6.3"
+  fi
 fi
 
 apply_minio_statefulset() {
   if [ -n "${PRODUCTION:-}" ]; then
     sed "s/storage: .*Gi/storage: 1Gi/" "$DIR/minio-statefulset.yaml"
   else
-    local digest
-    digest=$(skopeo inspect --override-os linux docker://quay.io/minio/minio | jq -r '.Digest')
-    if [[ -z "$digest" || "$digest" == "null" ]]; then
-      echo "WARN: skopeo digest lookup failed, using :latest tag"
-      cat "$DIR/minio-statefulset.yaml"
-    else
-      sed "s|quay.io/minio/minio:latest|quay.io/minio/minio@${digest}|" "$DIR/minio-statefulset.yaml"
-    fi
+    cat "$DIR/minio-statefulset.yaml"
   fi | oc apply -f -
 }
 
@@ -74,14 +75,17 @@ wait_for_operator_pod() {
 
 create_minio_bucket() {
   local endpoint=$1 bucket=$2
+  # The mc client image is distroless (no shell), so configure the alias via the
+  # MC_HOST_<alias> env var and invoke mc directly instead of `sh -c "mc alias ... && mc mb ..."`.
+  local mc_host="http://minioadmin:minioadmin@${endpoint#http://}"
   oc run minio-bucket-setup --rm -i --restart=Never -n minio \
-    --image=quay.io/minio/mc:latest \
+    --image=cgr.dev/chainguard/minio-client:latest \
     --overrides="{
       \"spec\":{\"containers\":[{
         \"name\":\"minio-bucket-setup\",
-        \"image\":\"quay.io/minio/mc:latest\",
-        \"command\":[\"sh\",\"-c\",\"mc alias set myminio ${endpoint} minioadmin minioadmin && mc mb --ignore-existing myminio/${bucket}\"],
-        \"env\":[{\"name\":\"HOME\",\"value\":\"/tmp\"}],
+        \"image\":\"cgr.dev/chainguard/minio-client:latest\",
+        \"command\":[\"/usr/bin/mc\",\"mb\",\"--ignore-existing\",\"myminio/${bucket}\"],
+        \"env\":[{\"name\":\"HOME\",\"value\":\"/tmp\"},{\"name\":\"MC_HOST_myminio\",\"value\":\"${mc_host}\"}],
         \"securityContext\":{\"allowPrivilegeEscalation\":false,\"runAsNonRoot\":true,\"capabilities\":{\"drop\":[\"ALL\"]},\"seccompProfile\":{\"type\":\"RuntimeDefault\"}}
       }]}
     }"

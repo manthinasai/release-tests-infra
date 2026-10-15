@@ -26,7 +26,7 @@ spec:
         env:
         - name: MINIO_KMS_SECRET_KEY
           value: my-minio-key:oyArl7zlPECEduNbB1KXgdzDn2Bdpvvw0l8VO51HQnY=
-        image: quay.io/minio/minio:latest
+        image: cgr.dev/chainguard/minio:latest
         imagePullPolicy: IfNotPresent
         name: minio
         terminationMessagePath: /dev/termination-log
