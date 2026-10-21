@@ -1292,6 +1292,7 @@ spec:
   # Evaluate + optional uninstall
   # ============================================================
   - name: evaluate-test-suites
+    onError: continue
     params:
       - name: CLUSTER_NAME
         value: $(tasks.provision-cluster.results.cluster-name)
@@ -1415,6 +1416,8 @@ spec:
           value: $(params.POST_TEST_IMAGE)
         - name: ENABLED
           value: $(params.SEND_SLACK_NOTIFICATION)
+        - name: AGGREGATE_TASKS_STATUS
+          value: "$(tasks.status)"
         - name: MESSAGE
           value: |
             <icon> upgrade-tests <pr_name> *<run_status>* <icon> <<logs_url>|logs> <failed_suites>
